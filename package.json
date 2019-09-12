@@ -1,0 +1,31 @@
+{
+  "name": "react-native-posenet",
+  "title": "React Native Posenet",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/indigoviolet/react-native-posenet.git",
+    "baseUrl": "https://github.com/indigoviolet/react-native-posenet"
+  },
+  "keywords": [
+    "react-native"
+  ],
+  "author": {
+    "name": "Venky Iyer",
+    "email": "indigoviolet@gmail.com"
+  },
+  "license": "MIT",
+  "licenseFilename": "LICENSE",
+  "readmeFilename": "README.md",
+  "dependencies": {
+    "react": "16.8.6",
+    "react-native": "0.60.3"
+  },
+  "peerDependencies": {
+    "react": "16.8.6",
+    "react-native": "0.60.3"
+  }
+}
