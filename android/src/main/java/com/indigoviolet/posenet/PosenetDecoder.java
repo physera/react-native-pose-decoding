@@ -1,9 +1,5 @@
 package com.indigoviolet.posenet;
 
-import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.WritableArray;
-import com.facebook.react.bridge.WritableMap;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -13,19 +9,13 @@ import java.util.PriorityQueue;
 
 public class PosenetDecoder {
 
-    private int mInputSize;
-    public PosenetDecoder(int inputSz) {
-        mInputSize = inputSz;
-        initPoseNet();
-    }
-
-    String[] partNames = {
+    private String[] partNames = {
         "nose", "leftEye", "rightEye", "leftEar", "rightEar", "leftShoulder",
         "rightShoulder", "leftElbow", "rightElbow", "leftWrist", "rightWrist",
         "leftHip", "rightHip", "leftKnee", "rightKnee", "leftAnkle", "rightAnkle"
     };
 
-    String[][] poseChain = {
+    private String[][] poseChain = {
         {"nose", "leftEye"}, {"leftEye", "leftEar"}, {"nose", "rightEye"},
         {"rightEye", "rightEar"}, {"nose", "leftShoulder"},
         {"leftShoulder", "leftElbow"}, {"leftElbow", "leftWrist"},
@@ -36,33 +26,46 @@ public class PosenetDecoder {
         {"rightKnee", "rightAnkle"}
     };
 
-    Map<String, Integer> partsIds = new HashMap<>();
-    List<Integer> parentToChildEdges = new ArrayList<>();
-    List<Integer> childToParentEdges = new ArrayList<>();
+    private int mOutputStride;
+    private int mNumKeypoints;
+
+    public PosenetDecoder(int outputStride) {
+        mOutputStride = outputStride;
+        initPoseNet();
+    }
+
+    private Map<String, Integer> partsIds = new HashMap<>();
+    private List<Integer> parentToChildEdges = new ArrayList<>();
+    private List<Integer> childToParentEdges = new ArrayList<>();
 
     private void initPoseNet() {
-        if (partsIds.size() == 0) {
-            for (int i = 0; i < partNames.length; ++i)
-                partsIds.put(partNames[i], i);
+        mNumKeypoints = partNames.length;
+        for (int i = 0; i < mNumKeypoints; ++i)
+            partsIds.put(partNames[i], i);
 
-            for (int i = 0; i < poseChain.length; ++i) {
-                parentToChildEdges.add(partsIds.get(poseChain[i][1]));
-                childToParentEdges.add(partsIds.get(poseChain[i][0]));
-            }
+        for (String[] edge : poseChain) {
+            parentToChildEdges.add(partsIds.get(edge[1]));
+            childToParentEdges.add(partsIds.get(edge[0]));
         }
     }
 
-    private Map<String, Object> makeKeypoint(float score, int partId, float x, float y) {
+    private Map<String, Object> makeKeypoint(float score, int partId, float y, float x) {
         Map<String, Object> keypoint = new HashMap<>();
         keypoint.put("score", score);
         keypoint.put("partId", partId);
         keypoint.put("part", partNames[partId]);
-        keypoint.put("y", y);
-        keypoint.put("x", x);
+
+        Map<String, Float> position = new HashMap<>();
+        position.put("y", y);
+        position.put("x", x);
+        keypoint.put("position", position);
+
+        // keypoint.put("y", y);
+        // keypoint.put("x", x);
         return keypoint;
     }
 
-    public List<Map<String, Object>> decode(Map<Integer, Object> outputMap, final int outputStride, final int numResults, final float threshold, final int nmsRadius) {
+    public List<Map<String, Object>> decode(Map<Integer, Object> outputMap, final int numResults, final float threshold, final int nmsRadius) {
         int localMaximumRadius = 1;
 
         float[][][] scores = ((float[][][][]) outputMap.get(0))[0];
@@ -72,76 +75,52 @@ public class PosenetDecoder {
 
         PriorityQueue<Map<String, Object>> pq = buildPartWithScoreQueue(scores, threshold, localMaximumRadius);
 
-        int numParts = scores[0][0].length;
-        int numEdges = parentToChildEdges.size();
         int squaredNmsRadius = nmsRadius * nmsRadius;
 
-        List<Map<String, Object>> results = new ArrayList<>();
-
-        while (results.size() < numResults && pq.size() > 0) {
+        List<Map<String, Object>> poses = new ArrayList<>();
+        while (poses.size() < numResults && pq.size() > 0) {
             Map<String, Object> root = pq.poll();
-            float[] rootPoint = getImageCoords(root, outputStride, numParts, offsets);
+            float[] rootPoint = getImageCoords(root, offsets);
 
-            if (withinNmsRadiusOfCorrespondingPoint(results, squaredNmsRadius, rootPoint[0], rootPoint[1], (int) root.get("partId")))
+            if (withinNmsRadiusOfCorrespondingPoint(poses, squaredNmsRadius, rootPoint[0], rootPoint[1], (int) root.get("partId")))
                 continue;
 
-            Map<String, Object> keypoint = makeKeypoint((float) root.get("score"), (int) root.get("partId"), rootPoint[1] / mInputSize, rootPoint[0] / mInputSize);
-            Map<Integer, Map<String, Object>> keypoints = new HashMap<>();
-            keypoints.put((int) root.get("partId"), keypoint);
+            List<Map<String, Object>> keypoints = decodePose(root, rootPoint, scores, offsets, displacementsFwd, displacementsBwd);
+            float score = getInstanceScore(keypoints, poses, squaredNmsRadius);
 
-            for (int edge = numEdges - 1; edge >= 0; --edge) {
-                int sourceKeypointId = parentToChildEdges.get(edge);
-                int targetKeypointId = childToParentEdges.get(edge);
-                if (keypoints.containsKey(sourceKeypointId) && !keypoints.containsKey(targetKeypointId)) {
-                    keypoint = traverseToTargetKeypoint(edge, keypoints.get(sourceKeypointId),
-                                                        targetKeypointId, scores, offsets, outputStride, displacementsBwd);
-                    keypoints.put(targetKeypointId, keypoint);
-                }
-            }
-
-            for (int edge = 0; edge < numEdges; ++edge) {
-                int sourceKeypointId = childToParentEdges.get(edge);
-                int targetKeypointId = parentToChildEdges.get(edge);
-                if (keypoints.containsKey(sourceKeypointId) && !keypoints.containsKey(targetKeypointId)) {
-                    keypoint = traverseToTargetKeypoint(edge, keypoints.get(sourceKeypointId),
-                                                        targetKeypointId, scores, offsets, outputStride, displacementsFwd);
-                    keypoints.put(targetKeypointId, keypoint);
-                }
-            }
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("keypoints", keypoints);
-            result.put("score", getInstanceScore(keypoints, numParts));
-            results.add(result);
+            Map<String, Object> pose = new HashMap<>();
+            pose.put("keypoints", keypoints);
+            pose.put("score", score);
+            poses.add(pose);
         }
-        return results;
-        // return serializeResults(results);
+        return poses;
     }
 
-    private WritableArray serializeResults(List<Map<String, Object>> results) {
-        // TODO use bridgeutils?
-        WritableArray outputs = Arguments.createArray();
-        for (Map<String, Object> result : results) {
-            Map<Integer, Map<String, Object>> keypoints = (Map<Integer, Map<String, Object>>) result.get("keypoints");
+    private List<Map<String, Object>> decodePose(Map<String, Object> root, float[] rootPoint, float[][][] scores, float[][][] offsets, float[][][] displacementsFwd, float[][][] displacementsBwd) {
+        int numEdges = parentToChildEdges.size();
+        Map<String, Object> rootKeypoint = makeKeypoint((float) root.get("score"), (int) root.get("partId"), rootPoint[0], rootPoint[1]);
 
-            WritableMap _keypoints = Arguments.createMap();
-            for (Map.Entry<Integer, Map<String, Object>> keypoint : keypoints.entrySet()) {
-                Map<String, Object> keypoint_ = keypoint.getValue();
-                WritableMap _keypoint = Arguments.createMap();
-                _keypoint.putDouble("score", Double.valueOf(keypoint_.get("score").toString()));
-                _keypoint.putString("part", keypoint_.get("part").toString());
-                _keypoint.putDouble("y", Double.valueOf(keypoint_.get("y").toString()));
-                _keypoint.putDouble("x", Double.valueOf(keypoint_.get("x").toString()));
-                _keypoints.putMap(keypoint.getKey().toString(), _keypoint);
+        Map<Integer, Map<String, Object>> keypoints = new HashMap<>();
+        keypoints.put((int) root.get("partId"), rootKeypoint);
+
+        for (int edge = numEdges - 1; edge >= 0; --edge) {
+            int sourceKeypointId = parentToChildEdges.get(edge);
+            int targetKeypointId = childToParentEdges.get(edge);
+            if (keypoints.containsKey(sourceKeypointId) && !keypoints.containsKey(targetKeypointId)) {
+                Map<String, Object> keypoint = traverseToTargetKeypoint(edge, keypoints.get(sourceKeypointId), targetKeypointId, scores, offsets, displacementsBwd);
+                keypoints.put(targetKeypointId, keypoint);
             }
-
-            WritableMap output = Arguments.createMap();
-            output.putMap("keypoints", _keypoints);
-            output.putDouble("score", Double.valueOf(result.get("score").toString()));
-
-            outputs.pushMap(output);
         }
-        return outputs;
+
+        for (int edge = 0; edge < numEdges; ++edge) {
+            int sourceKeypointId = childToParentEdges.get(edge);
+            int targetKeypointId = parentToChildEdges.get(edge);
+            if (keypoints.containsKey(sourceKeypointId) && !keypoints.containsKey(targetKeypointId)) {
+                Map<String, Object> keypoint = traverseToTargetKeypoint(edge, keypoints.get(sourceKeypointId), targetKeypointId, scores, offsets,  displacementsFwd);
+                keypoints.put(targetKeypointId, keypoint);
+            }
+        }
+        return new ArrayList<>(keypoints.values());
     }
 
     private PriorityQueue<Map<String, Object>> buildPartWithScoreQueue(float[][][] scores, double threshold, int localMaximumRadius) {
@@ -162,7 +141,7 @@ public class PosenetDecoder {
                     if (score < threshold) continue;
 
                     if (scoreIsMaximumInLocalWindow(keypointId, score, heatmapY, heatmapX, localMaximumRadius, scores)) {
-                        Map<String, Object> res = makeKeypoint(score, keypointId, heatmapX, heatmapY);
+                        Map<String, Object> res = makeKeypoint(score, keypointId, heatmapY, heatmapX);
                         pq.add(res);
                     }
                 }
@@ -201,20 +180,34 @@ public class PosenetDecoder {
         return localMaximum;
     }
 
-    private float[] getImageCoords(Map<String, Object> keypoint,
-                                   int outputStride,
-                                   int numParts,
-                                   float[][][] offsets) {
-        int heatmapY = (int) keypoint.get("y");
-        int heatmapX = (int) keypoint.get("x");
-        int keypointId = (int) keypoint.get("partId");
-        float offsetY = offsets[heatmapY][heatmapX][keypointId];
-        float offsetX = offsets[heatmapY][heatmapX][keypointId + numParts];
+    private float[] getOffsetPoint(int y, int x, int keypointId, float[][][] offsets) {
+        float offsetY = offsets[y][x][keypointId];
+        float offsetX = offsets[y][x][keypointId + mNumKeypoints];
+        return new float[]{offsetY, offsetX};
+    }
 
-        float y = heatmapY * outputStride + offsetY;
-        float x = heatmapX * outputStride + offsetX;
+    private float[] getImageCoords(Map<String, Object> keypoint, float[][][] offsets) {
+        // This is only invoked from keypoints that are on the
+        // PriorityQueue, where x and y are integers, so it's safe to
+        // round them (we can't cast float to int)
+        int heatmapY = Math.round(getKeypointPosition(keypoint, "y"));
+        int heatmapX = Math.round(getKeypointPosition(keypoint, "x"));
+        int keypointId = (int) keypoint.get("partId");
+        float[] offsetPoint = getOffsetPoint(heatmapY, heatmapX, keypointId, offsets);
+        // int keypointId = (int) keypoint.get("partId");
+        // float offsetY = offsets[heatmapY][heatmapX][keypointId];
+        // float offsetX = offsets[heatmapY][heatmapX][keypointId + numParts];
+
+        float y = heatmapY * mOutputStride + offsetPoint[0];
+        float x = heatmapX * mOutputStride + offsetPoint[1];
 
         return new float[]{y, x};
+    }
+
+    private float squaredDistance(float y1, float x1, float y2, float x2) {
+        float dy = y1 - y2;
+        float dx = x1 - x2;
+        return dy * dy + dx * dx;
     }
 
     private boolean withinNmsRadiusOfCorrespondingPoint(List<Map<String, Object>> poses,
@@ -223,33 +216,34 @@ public class PosenetDecoder {
                                                         float x,
                                                         int keypointId) {
         for (Map<String, Object> pose : poses) {
-            Map<Integer, Object> keypoints = (Map<Integer, Object>) pose.get("keypoints");
-            Map<String, Object> correspondingKeypoint = (Map<String, Object>) keypoints.get(keypointId);
-            float _x = (float) correspondingKeypoint.get("x") * mInputSize - x;
-            float _y = (float) correspondingKeypoint.get("y") * mInputSize - y;
-            float squaredDistance = _x * _x + _y * _y;
-            if (squaredDistance <= squaredNmsRadius)
+            List<Map<String, Object>> keypoints = (List<Map<String, Object>>) pose.get("keypoints");
+            Map<String, Object> correspondingKeypoint = keypoints.get(keypointId);
+            float sq = squaredDistance(y, x, getKeypointPosition(correspondingKeypoint, "y"),  getKeypointPosition(correspondingKeypoint, "x"));
+            if (sq <= squaredNmsRadius)
                 return true;
         }
 
         return false;
     }
 
+    private float getKeypointPosition(Map<String, Object> keypoint, String axis) {
+        return ((Map<String, Float>) keypoint.get("position")).get(axis);
+    }
+
+
+
     private Map<String, Object> traverseToTargetKeypoint(int edgeId,
                                                          Map<String, Object> sourceKeypoint,
                                                          int targetKeypointId,
                                                          float[][][] scores,
                                                          float[][][] offsets,
-                                                         int outputStride,
                                                          float[][][] displacements) {
         int height = scores.length;
         int width = scores[0].length;
-        int numKeypoints = scores[0][0].length;
-        float sourceKeypointY = (float) sourceKeypoint.get("y") * mInputSize;
-        float sourceKeypointX = (float) sourceKeypoint.get("x") * mInputSize;
+        float sourceKeypointY = getKeypointPosition(sourceKeypoint, "y");
+        float sourceKeypointX = getKeypointPosition(sourceKeypoint, "x");
 
-        int[] sourceKeypointIndices = getStridedIndexNearPoint(sourceKeypointY, sourceKeypointX,
-                                                               outputStride, height, width);
+        int[] sourceKeypointIndices = getStridedIndexNearPoint(sourceKeypointY, sourceKeypointX, height, width);
 
         float[] displacement = getDisplacement(edgeId, sourceKeypointIndices, displacements);
 
@@ -262,35 +256,35 @@ public class PosenetDecoder {
 
         final int offsetRefineStep = 2;
         for (int i = 0; i < offsetRefineStep; i++) {
-            int[] targetKeypointIndices = getStridedIndexNearPoint(targetKeypoint[0], targetKeypoint[1],
-                                                                   outputStride, height, width);
+            int[] targetKeypointIndices = getStridedIndexNearPoint(targetKeypoint[0], targetKeypoint[1], height, width);
 
             int targetKeypointY = targetKeypointIndices[0];
             int targetKeypointX = targetKeypointIndices[1];
 
-            float offsetY = offsets[targetKeypointY][targetKeypointX][targetKeypointId];
-            float offsetX = offsets[targetKeypointY][targetKeypointX][targetKeypointId + numKeypoints];
+            float[] offsetPoint = getOffsetPoint(targetKeypointY, targetKeypointX, targetKeypointId, offsets);
 
             targetKeypoint = new float[]{
-                targetKeypointY * outputStride + offsetY,
-                targetKeypointX * outputStride + offsetX
+                targetKeypointY * mOutputStride + offsetPoint[0],
+                targetKeypointX * mOutputStride + offsetPoint[1]
             };
         }
 
-        int[] targetKeypointIndices = getStridedIndexNearPoint(targetKeypoint[0], targetKeypoint[1],
-                                                               outputStride, height, width);
+        int[] targetKeypointIndices = getStridedIndexNearPoint(targetKeypoint[0], targetKeypoint[1], height, width);
 
         float score = sigmoid(scores[targetKeypointIndices[0]][targetKeypointIndices[1]][targetKeypointId]);
 
-        Map<String, Object> keypoint = makeKeypoint(score, targetKeypointId, targetKeypoint[1] / mInputSize, targetKeypoint[0] / mInputSize);
-        return keypoint;
+        return makeKeypoint(score, targetKeypointId, targetKeypoint[0], targetKeypoint[1] );
     }
 
-    private int[] getStridedIndexNearPoint(float _y, float _x, int outputStride, int height, int width) {
-        int y_ = Math.round(_y / outputStride);
-        int x_ = Math.round(_x / outputStride);
-        int y = y_ < 0 ? 0 : y_ > height - 1 ? height - 1 : y_;
-        int x = x_ < 0 ? 0 : x_ > width - 1 ? width - 1 : x_;
+    private int clamp(int v, int min, int max) {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+    }
+
+    private int[] getStridedIndexNearPoint(float _y, float _x, int height, int width) {
+        int y = clamp(Math.round(_y / mOutputStride), 0, height - 1);
+        int x = clamp(Math.round(_x / mOutputStride), 0, width - 1);
         return new int[]{y, x};
     }
 
@@ -301,11 +295,15 @@ public class PosenetDecoder {
         return new float[]{displacements[y][x][edgeId], displacements[y][x][edgeId + numEdges]};
     }
 
-    float getInstanceScore(Map<Integer, Map<String, Object>> keypoints, int numKeypoints) {
+    private float getInstanceScore(List<Map<String, Object>> keypoints, List<Map<String, Object>> existingPoses, int squaredNmsRadius) {
         float scores = 0;
-        for (Map.Entry<Integer, Map<String, Object>> keypoint : keypoints.entrySet())
-            scores += (float) keypoint.getValue().get("score");
-        return scores / numKeypoints;
+        for (Map<String, Object> keypoint : keypoints) {
+            if (withinNmsRadiusOfCorrespondingPoint(existingPoses, squaredNmsRadius, getKeypointPosition(keypoint, "y"), getKeypointPosition(keypoint, "x"), (int) keypoint.get("partId")))
+                continue;
+            scores += (float) keypoint.get("score");
+        }
+
+        return scores / mNumKeypoints;
     }
 
     private float sigmoid(final float x) {
