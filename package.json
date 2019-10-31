@@ -1,14 +1,14 @@
 {
-  "name": "react-native-posenet",
-  "title": "React Native Posenet",
+  "name": "react-native-pose-decoding",
+  "title": "React Native Pose Decoding",
   "version": "1.0.0",
   "description": "",
   "scripts": {
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/indigoviolet/react-native-posenet.git",
-    "baseUrl": "https://github.com/indigoviolet/react-native-posenet"
+    "url": "git+https://github.com/indigoviolet/react-native-pose-decoding.git",
+    "baseUrl": "https://github.com/indigoviolet/react-native-pose-decoding"
   },
   "keywords": [
     "react-native"

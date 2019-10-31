@@ -1,5 +1,5 @@
 import { NativeModules } from 'react-native';
 
-const { RNPosenet } = NativeModules;
+const { RNPoseDecoding } = NativeModules;
 
-export default RNPosenet;
+export default RNPoseDecoding;

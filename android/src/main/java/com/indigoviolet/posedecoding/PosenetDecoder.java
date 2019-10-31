@@ -1,4 +1,4 @@
-package com.indigoviolet.posenet;
+package com.indigoviolet.posedecoding;
 
 import java.util.ArrayList;
 import java.util.Comparator;
