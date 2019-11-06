@@ -8,7 +8,10 @@ import android.util.Log
 typealias ThreeDFloatArray = Array<Array<FloatArray>>
 typealias FourDFloatArray = Array<ThreeDFloatArray>
 
-class PosenetDecoder private constructor(private val outputStride: Int, private val numResults: Int, private val threshold: Float, private val nmsRadius: Int) {
+class PosenetDecoder private constructor(private val outputStride: Int,
+                                         private val numResults: Int,
+                                         private val threshold: Float,
+                                         private val nmsRadius: Int): Decoder() {
 
     companion object {
         private lateinit var instance: PosenetDecoder
@@ -81,7 +84,7 @@ class PosenetDecoder private constructor(private val outputStride: Int, private 
         }
     }
 
-    fun decode(outputMap: Map<Int, Any>): List<Map<String, Any>> {
+    override fun decode(outputMap: Map<Int, Any>): List<Map<String, Any>> {
         val localMaximumRadius = 1
 
         @Suppress("UNCHECKED_CAST")
