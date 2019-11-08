@@ -1,35 +1,33 @@
 package com.indigoviolet.posedecoding
 
-import java.util.PriorityQueue
+import java.util.*
 import kotlin.math.exp
 import kotlin.math.roundToInt
-import android.util.Log
 
 typealias ThreeDFloatArray = Array<Array<FloatArray>>
 typealias FourDFloatArray = Array<ThreeDFloatArray>
 
-class PosenetDecoder private constructor(private val outputStride: Int,
-                                         private val numResults: Int,
-                                         private val threshold: Float,
-                                         private val nmsRadius: Int): Decoder() {
+class PosenetDecoder private constructor(
+    private val model: TfliteModel,
+    private val params: DecoderParams
+) : Decoder(model, params) {
 
     companion object {
         private lateinit var instance: PosenetDecoder
 
-        @JvmStatic @JvmOverloads fun getInstance(outputStride: Int, numResults: Int = 1, threshold: Float = 0.5f, nmsRadius: Int = 20): PosenetDecoder {
+        @JvmStatic
+        fun getInstance(model: TfliteModel, params: DecoderParams): PosenetDecoder {
             // This is only to try to keep the same instance shared
             // across multiple invocations of decode, to avoid
             // reinitialization. It's not important that this be
             // synchronized -- there is no actual shared state across
             // threads
             val existsAndMatches = ::instance.isInitialized && (
-                instance.outputStride == outputStride &&
-                instance.numResults == numResults &&
-                instance.threshold == threshold &&
-                instance.nmsRadius == nmsRadius
+                instance.model == model &&
+                instance.params == params
             )
             if (!existsAndMatches) {
-                instance = PosenetDecoder(outputStride, numResults, threshold, nmsRadius)
+                instance = PosenetDecoder(model, params)
             }
 
             return instance
@@ -37,74 +35,71 @@ class PosenetDecoder private constructor(private val outputStride: Int,
     }
 
     private val partNames = arrayOf("nose",
-                                    "leftEye", "rightEye",
-                                    "leftEar", "rightEar",
-                                    "leftShoulder", "rightShoulder",
-                                    "leftElbow", "rightElbow",
-                                    "leftWrist", "rightWrist",
-                                    "leftHip", "rightHip",
-                                    "leftKnee", "rightKnee",
-                                    "leftAnkle", "rightAnkle")
+            "leftEye", "rightEye",
+            "leftEar", "rightEar",
+            "leftShoulder", "rightShoulder",
+            "leftElbow", "rightElbow",
+            "leftWrist", "rightWrist",
+            "leftHip", "rightHip",
+            "leftKnee", "rightKnee",
+            "leftAnkle", "rightAnkle")
 
     private val poseChain = arrayOf(
-        Pair("nose", "leftEye"),
-        Pair("leftEye", "leftEar"),
-        Pair("nose", "rightEye"),
-        Pair("rightEye", "rightEar"),
-        Pair("nose", "leftShoulder"),
-        Pair("leftShoulder", "leftElbow"),
-        Pair("leftElbow", "leftWrist"),
-        Pair("leftShoulder", "leftHip"),
-        Pair("leftHip", "leftKnee"),
-        Pair("leftKnee", "leftAnkle"),
-        Pair("nose", "rightShoulder"),
-        Pair("rightShoulder", "rightElbow"),
-        Pair("rightElbow", "rightWrist"),
-        Pair("rightShoulder", "rightHip"),
-        Pair("rightHip", "rightKnee"),
-        Pair("rightKnee", "rightAnkle")
+            Pair("nose", "leftEye"),
+            Pair("leftEye", "leftEar"),
+            Pair("nose", "rightEye"),
+            Pair("rightEye", "rightEar"),
+            Pair("nose", "leftShoulder"),
+            Pair("leftShoulder", "leftElbow"),
+            Pair("leftElbow", "leftWrist"),
+            Pair("leftShoulder", "leftHip"),
+            Pair("leftHip", "leftKnee"),
+            Pair("leftKnee", "leftAnkle"),
+            Pair("nose", "rightShoulder"),
+            Pair("rightShoulder", "rightElbow"),
+            Pair("rightElbow", "rightWrist"),
+            Pair("rightShoulder", "rightHip"),
+            Pair("rightHip", "rightKnee"),
+            Pair("rightKnee", "rightAnkle")
     )
 
-    private val partsIds = mutableMapOf<String, Int>()
-    private val parentToChildEdges = mutableListOf<Int>()
-    private val childToParentEdges = mutableListOf<Int>()
+    private val partsIds: Map<String, Int>
+    private val parentToChildEdges: List<Int>
+    private val childToParentEdges: List<Int>
 
     init {
-        initPoseNet()
+        partsIds = partNames.indices.map { Pair(partNames[it], it) }.toMap()
+        parentToChildEdges = poseChain.map { partsIds.getValue(it.second) }
+        childToParentEdges = poseChain.map { partsIds.getValue(it.first) }
     }
 
-    private fun initPoseNet() {
-        for (i in partNames.indices) {
-            partsIds[partNames[i]] = i
-        }
-
-        for (edge in poseChain) {
-            parentToChildEdges.add(partsIds[edge.second]!!)
-            childToParentEdges.add(partsIds[edge.first]!!)
-        }
+    override fun addPixelValue(v: Int) {
+        inputBuf.putFloat((((v shr 16) and 0xFF) - params.posenetMean) / params.posenetStd)
+        inputBuf.putFloat((((v shr 8) and 0xFF) - params.posenetMean) / params.posenetStd)
+        inputBuf.putFloat(((v and 0xFF) - params.posenetMean) / params.posenetStd)
     }
 
-    override fun decode(outputMap: Map<Int, Any>): List<Map<String, Any>> {
+    override fun decode(): List<Pose> {
         val localMaximumRadius = 1
 
         @Suppress("UNCHECKED_CAST")
-        val scores = (outputMap[0] as FourDFloatArray)[0]
+        val scores = (outputBuf[0] as FourDFloatArray)[0]
 
         @Suppress("UNCHECKED_CAST")
-        val offsets = (outputMap[1] as FourDFloatArray)[0]
+        val offsets = (outputBuf[1] as FourDFloatArray)[0]
 
         @Suppress("UNCHECKED_CAST")
-        val displacementsFwd = (outputMap[2] as FourDFloatArray)[0]
+        val displacementsFwd = (outputBuf[2] as FourDFloatArray)[0]
 
         @Suppress("UNCHECKED_CAST")
-        val displacementsBwd = (outputMap[3] as FourDFloatArray)[0]
+        val displacementsBwd = (outputBuf[3] as FourDFloatArray)[0]
 
-        val pq = buildPartWithScoreQueue(scores, threshold.toDouble(), localMaximumRadius)
+        val pq = buildPartWithScoreQueue(scores, params.threshold.toDouble(), localMaximumRadius)
 
-        val squaredNmsRadius = nmsRadius * nmsRadius
+        val squaredNmsRadius = params.posenetNMSRadius * params.posenetNMSRadius
 
         val poses = mutableListOf<Pose>()
-        while (poses.size < numResults && pq.size > 0) {
+        while (poses.size < params.posenetNumResults && pq.size > 0) {
             val root = pq.poll()
             val rootPoint = getImageCoords(root, offsets)
 
@@ -115,7 +110,7 @@ class PosenetDecoder private constructor(private val outputStride: Int,
             val score = getInstanceScore(keypoints, poses, squaredNmsRadius)
             poses.add(Pose(score, keypoints))
         }
-        return poses.map { it.toMap() }
+        return poses
     }
 
     private fun decodePose(root: Keypoint, rootPoint: FloatCoords, scores: ThreeDFloatArray, offsets: ThreeDFloatArray, displacementsFwd: ThreeDFloatArray, displacementsBwd: ThreeDFloatArray): List<Keypoint> {
@@ -207,8 +202,8 @@ class PosenetDecoder private constructor(private val outputStride: Int,
         val heatmapX = keypoint.x.roundToInt()
         val keypointId = keypoint.partId
         val (offsetY, offsetX) = getOffsetPoint(IntCoords(heatmapY, heatmapX), keypointId, offsets)
-        val y = heatmapY * outputStride + offsetY
-        val x = heatmapX * outputStride + offsetX
+        val y = heatmapY * model.posenetOutputStride + offsetY
+        val x = heatmapX * model.posenetOutputStride + offsetX
 
         return FloatCoords(y, x)
     }
@@ -252,7 +247,7 @@ class PosenetDecoder private constructor(private val outputStride: Int,
             val targetKPIdxs = getStridedIndexNearPoint(targetKeypoint, height, width)
             val (offsetY, offsetX) = getOffsetPoint(targetKPIdxs, targetKeypointId, offsets)
 
-            targetKeypoint = FloatCoords(targetKPIdxs.y * outputStride + offsetY, targetKPIdxs.x * outputStride + offsetX)
+            targetKeypoint = FloatCoords(targetKPIdxs.y * model.posenetOutputStride + offsetY, targetKPIdxs.x * model.posenetOutputStride + offsetX)
         }
 
         val (targetKPIdxY, targetKPIdxX) = getStridedIndexNearPoint(targetKeypoint, height, width)
@@ -270,12 +265,12 @@ class PosenetDecoder private constructor(private val outputStride: Int,
 
     private fun getStridedIndexNearPoint(kp: FloatCoords, height: Int, width: Int): IntCoords {
         val (_y, _x) = kp
-        val y = clamp((_y / outputStride).roundToInt(), 0, height - 1)
-        val x = clamp((_x / outputStride).roundToInt(), 0, width - 1)
+        val y = clamp((_y / model.posenetOutputStride).roundToInt(), 0, height - 1)
+        val x = clamp((_x / model.posenetOutputStride).roundToInt(), 0, width - 1)
         return IntCoords(y, x)
     }
 
-    private fun getDisplacement(edgeId: Int, keypointIdxs: IntCoords, displacements: ThreeDFloatArray):  FloatCoords {
+    private fun getDisplacement(edgeId: Int, keypointIdxs: IntCoords, displacements: ThreeDFloatArray): FloatCoords {
         val numEdges = displacements[0][0].size / 2
         val (y, x) = keypointIdxs
         return FloatCoords(displacements[y][x][edgeId], displacements[y][x][edgeId + numEdges])
