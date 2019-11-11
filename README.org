@@ -1,0 +1,10 @@
+#+TITLE:     Pose detection for React Native
+#+AUTHOR:    Venky Iyer
+
+This library implements pose detection for a React Native app. It includes three models:
+
+1. [[https://medium.com/tensorflow/real-time-human-pose-estimation-in-the-browser-with-tensorflow-js-7dd0bc881cd5][Posenet]], following the [[https://github.com/tensorflow/tfjs-models/tree/master/posenet][Tensorflow.js]] implementation
+
+2. [[https://arxiv.org/abs/1602.00134][Convolutional Pose Machines]], following [[https://github.com/indigoviolet/PoseEstimationForMobile]]
+
+3. [[https://arxiv.org/abs/1603.06937][Stacked Hourglass networks]], following [[https://github.com/indigoviolet/PoseEstimationForMobile]]
